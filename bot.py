@@ -2,11 +2,14 @@
 import time
 import datetime
 from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
-import test_config as config
+import config
 from operator import itemgetter
 import random
 import shelve
-
+import db
+from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+from models import *
 
 # TODO -
 
@@ -34,21 +37,19 @@ class group_bot():
             '!группы': self.print_group,
             '!время': self.set_time
         }
-        self.vk_app_session = vk_api.VkApi(token=config.token_for_app)
-        self.app_api = self.vk_app_session.get_api()
+        #self.vk_app_session = vk_api.VkApi(token=config.token_for_app)
+        #self.app_api = self.vk_app_session.get_api()
         self.vk_group_session = vk_api.VkApi(token=config.token_for_bot)
         self.group_api = self.vk_group_session.get_api()
+        self.db = db.dbConnector()
 
     def set_auto(self, _, peer_id, __):
-        with shelve.open('auto') as file:
-            copy = file.get('list', [])
-            if peer_id in copy:
-                copy.remove(peer_id)
-                status = 'отключен'
-            else:
-                copy.append(peer_id)
-                status = "включен"
-            file['list'] = copy
+        this_dialog = self.db.get_group(peer_id)
+        if this_dialog.autopost:
+            status = 'отключен'
+        else:
+            status = 'включен'
+        self.db.update_group_autopost(peer_id)
         self.group_api.messages.send(peer_id=peer_id,
                                      message="Автопостинг {}!".format(status),
                                      random_id=random.randrange(1000000))
@@ -504,31 +505,36 @@ class group_bot():
         longpoll = VkBotLongPoll(self.vk_group_session, config.bot_id)
         for event in longpoll.listen():
             try:
-                if event.type == VkBotEventType.MESSAGE_NEW and event.obj['from_id'] \
-                        in self.admin_list(event.obj['peer_id']):
-                    if event.from_chat:
-                        if event.object.get('action'):
-                            if 'chat_invite' in event.object['action'].get('type'):
-                                try:
-                                    self.say_rulers(None, event.object['peer_id'])
-                                    self.add_user_to_list(event.object['action'].get('member_id'),
-                                                          event.object['peer_id'])
-                                    self.print_user_list(None, event.object['peer_id'])
-                                except Exception as err:
-                                    print(err)
-                            if 'chat_kick_user' in event.object['action'].get('type'):
-                                try:
-                                    self.delete_user(f"id{event.object['action']['member_id']}",
-                                                     event.object['peer_id'])
-                                    self.print_user_list(None, event.object['peer_id'])
-                                except Exception as err:
-                                    print(err)
-                        message = event.obj.text.split(' ')
-                        if message[0] in self.user_commands:
-                            user_list = self.get_users_id_from_nicknames(message[1:])
-                            self.user_commands[message[0]](user_list, event.obj['peer_id'], event.chat_id)
-                        if message[0] in self.group_commands:
-                            self.group_commands[message[0]](' '.join(message[1:]), event.obj['peer_id'])
+
+                if event.type == VkBotEventType.MESSAGE_NEW:
+                    if event.obj['from_id'] in self.admin_list(event.obj['peer_id']):
+                        if event.from_chat:
+                            if event.object.get('action'):
+                                if 'chat_invite' in event.object['action'].get('type'):
+                                    try:
+                                        self.say_rulers(None, event.object['peer_id'])
+                                        self.add_user_to_list(event.object['action'].get('member_id'),
+                                                              event.object['peer_id'])
+                                        self.print_user_list(None, event.object['peer_id'])
+                                    except Exception as err:
+                                        print(err)
+                                if 'chat_kick_user' in event.object['action'].get('type'):
+                                    try:
+                                        self.delete_user(f"id{event.object['action']['member_id']}",
+                                                         event.object['peer_id'])
+                                        self.print_user_list(None, event.object['peer_id'])
+                                    except Exception as err:
+                                        print(err)
+                            message = event.obj.text.split(' ')
+                            if message[0] in self.user_commands:
+                                user_list = self.get_users_id_from_nicknames(message[1:])
+                                self.user_commands[message[0]](user_list, event.obj['peer_id'], event.chat_id)
+                            if message[0] in self.group_commands:
+                                self.group_commands[message[0]](' '.join(message[1:]), event.obj['peer_id'])
+                    else:
+                        self.group_api.messages.send(peer_id=event.obj['peer_id'],
+                                                     message="Я слушаю только админов!",
+                                                     random_id=random.randrange(1000000))
             except Exception as err:
                 print(err)
 
